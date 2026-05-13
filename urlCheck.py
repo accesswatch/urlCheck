@@ -55,6 +55,9 @@ sConfigFileName = "urlCheck.ini"
 sDequeRuleUrlBase = "https://dequeuniversity.com/rules/axe"
 sFallbackAxeVersion = "4.10"
 sFallbackTitle = "untitled-page"
+sGlowAutomationConsentDefaultToken = "GLOW"
+sGlowAutomationConsentEnv = "GLOW_AUTOMATION_CONSENT_TOKEN"
+sGlowAutomationConsentHeader = "X-GLOW-Automation-Consent"
 sJsonName = "results.json"
 sLogFileName = "urlCheck.log"
 sMsAccessibilityUrl = "https://learn.microsoft.com/accessibility/"
@@ -3098,7 +3101,57 @@ def parseArguments():
         help="When a url's domain is encountered for the first time in this run, pause after the page loads and prompt the user to authenticate (sign in, accept cookies, dismiss popups, etc.) and press Enter (or click OK in GUI mode) to resume. Within the same run, subsequent urls on the same domain reuse the established session without prompting. Without --main-profile, urlCheck disconnects its automation channel from Edge while the user authenticates and reconnects after, which improves the chance of success against sites that block automated browsers (e.g. WhatsApp Web). With --main-profile, the disconnect pattern is not used (browser security forbids it against your real profile). Forces visible browser mode (overrides --invisible).")
     argParser.add_argument("-m", "--main-profile", dest="bMainProfile", action="store_true",
         help="Launch Edge with your real (default) Edge user profile so saved logins, cookies, and session state are available. Without -m, urlCheck launches Edge with a fresh ephemeral profile so the scan is anonymous and your real profile is not exposed to the scanned site. Requires that no Microsoft Edge process is already running, since Edge cannot share a profile across two processes; urlCheck checks at startup and exits gracefully with a message if Edge is running.")
+    argParser.add_argument("--glow-consent-token", dest="sGlowConsentToken", default="",
+        help="Send the GLOW automation consent bypass header on page requests. If omitted, urlCheck reads GLOW_AUTOMATION_CONSENT_TOKEN from the process environment, otherwise defaults to GLOW. The token is not saved to urlCheck.ini and is redacted from urlCheck logs.")
     return argParser.parse_args()
+
+
+def getGlowConsentToken(arguments):
+    """Return the configured GLOW automation token, if any."""
+    sToken = str(getattr(arguments, "sGlowConsentToken", "") or "").strip()
+    if sToken: return sToken
+    return str(
+        os.environ.get(
+            sGlowAutomationConsentEnv,
+            sGlowAutomationConsentDefaultToken,
+        ) or ""
+    ).strip()
+
+
+def getExtraHttpHeaders(arguments):
+    """Build extra HTTP headers for browser page requests."""
+    sToken = getGlowConsentToken(arguments)
+    if not sToken: return {}
+    return {sGlowAutomationConsentHeader: sToken}
+
+
+def applyExtraHttpHeaders(context, dExtraHttpHeaders):
+    """Apply configured headers to an existing Playwright context."""
+    if not dExtraHttpHeaders: return
+    try:
+        context.set_extra_http_headers(dExtraHttpHeaders)
+    except Exception as ex:
+        logger.warn(f"Could not apply extra HTTP headers: {ex}")
+
+
+def getRedactedCommandLine():
+    """Return sys.argv with secret command-line values hidden."""
+    lRedacted = []
+    bRedactNext = False
+    for sArg in sys.argv:
+        if bRedactNext:
+            lRedacted.append("[redacted]")
+            bRedactNext = False
+            continue
+        if sArg == "--glow-consent-token":
+            lRedacted.append(sArg)
+            bRedactNext = True
+            continue
+        if sArg.startswith("--glow-consent-token="):
+            lRedacted.append("--glow-consent-token=[redacted]")
+            continue
+        lRedacted.append(sArg)
+    return " ".join(lRedacted)
 
 
 # Module-level state for the --authenticate feature. Tracks the set of
@@ -3317,7 +3370,8 @@ def pauseForAuthenticationIfNeeded(page, sUrl, bAuthenticate, bGuiMode):
 
 
 def pauseForAuthenticationWithDisconnect(playwrightCtx, sWsEndpoint,
-        browser, context, page, sUrl, bAuthenticate, bGuiMode):
+    browser, context, page, sUrl, bAuthenticate, bGuiMode,
+    dExtraHttpHeaders=None):
     """Disconnect/reconnect variant of pauseForAuthenticationIfNeeded
     used when --authenticate (-a) is set without --main-profile (-m).
     Differs from the default-profile variant in two ways:
@@ -3441,6 +3495,7 @@ def pauseForAuthenticationWithDisconnect(playwrightCtx, sWsEndpoint,
     # it runs twice on each page load, which is harmless because the
     # second defineProperty() call overwrites with the same value.
     applyWebdriverOverride(contextNew)
+    applyExtraHttpHeaders(contextNew, dExtraHttpHeaders or {})
 
     # Find the page the user was last on. The auth flow may have
     # navigated, opened popups, or redirected through OAuth/SSO; the
@@ -3469,7 +3524,7 @@ def pauseForAuthenticationWithDisconnect(playwrightCtx, sWsEndpoint,
     return (browserNew, contextNew, pageNew)
 
 
-def scanUrl(sInput, sNormalizedUrl, browser, context, pathBaseDir, sAxeContent="", bForce=False, bAuthenticate=False, bGuiMode=False, bMainProfile=False, playwrightCtx=None, sWsEndpoint=None, lConnHolder=None):
+def scanUrl(sInput, sNormalizedUrl, browser, context, pathBaseDir, sAxeContent="", bForce=False, bAuthenticate=False, bGuiMode=False, bMainProfile=False, playwrightCtx=None, sWsEndpoint=None, lConnHolder=None, dExtraHttpHeaders=None):
     """Run a single-url scan.
 
     Returns:
@@ -3528,7 +3583,7 @@ def scanUrl(sInput, sNormalizedUrl, browser, context, pathBaseDir, sAxeContent="
             (browser, context, page) = pauseForAuthenticationWithDisconnect(
                 playwrightCtx, sWsEndpoint,
                 browser, context, page, sNormalizedUrl,
-                bAuthenticate, bGuiMode)
+                bAuthenticate, bGuiMode, dExtraHttpHeaders)
             if lConnHolder is not None:
                 lConnHolder[0] = browser
                 lConnHolder[1] = context
@@ -6528,6 +6583,7 @@ def main():
     iSkippedCount = 0
     iUrlIndex = 0
     iUrlTotal = 0
+    dExtraHttpHeaders = {}
     lUrls = []
     sInput = ""
     sNormalizedUrl = ""
@@ -6591,7 +6647,7 @@ def main():
         logger.info(f"Bundle: _MEIPASS={getattr(sys, '_MEIPASS', '')}; "
             f"pid={os.getpid()}")
     logger.info(f"Working folder: {os.getcwd()}")
-    logger.info(f"argv: {sys.argv}")
+    logger.info(f"argv: {getRedactedCommandLine()}")
 
     # Auto-detect GUI launch via GetConsoleProcessList (primary) with parent-
     # process name as fallback (see isLaunchedFromGui). When invoked with no
@@ -6647,6 +6703,10 @@ def main():
             f"viewOutput={arguments.bViewOutput} "
             f"log={arguments.bLog} useConfig={arguments.bUseConfig}")
 
+    dExtraHttpHeaders = getExtraHttpHeaders(arguments)
+    logger.info("GLOW automation consent header: "
+        f"{'enabled' if dExtraHttpHeaders else 'disabled'}")
+
     if not arguments.sSource:
         print("No urls to scan.")
         return 1
@@ -6692,9 +6752,10 @@ def main():
         ("View output",        str(bool(arguments.bViewOutput)).lower()),
         ("Use configuration",  str(bool(arguments.bUseConfig)).lower()),
         ("Log session",        str(bool(arguments.bLog)).lower()),
+        ("GLOW automation consent header", str(bool(dExtraHttpHeaders)).lower()),
         ("GUI mode",           str(bool(bGuiMode)).lower()),
         ("Working folder",     os.getcwd()),
-        ("Command line",       " ".join(sys.argv)),
+        ("Command line",       getRedactedCommandLine()),
     ]
     logger.header(sProgramName, sProgramVersion, lHeaderParams)
 
@@ -6913,6 +6974,7 @@ def main():
                         chromium_sandbox=True,
                         bypass_csp=True,
                         ignore_https_errors=bDefaultIgnoreHttpsErrors,
+                        extra_http_headers=dExtraHttpHeaders or None,
                         user_agent=sUserAgent,
                         viewport={"width": iDefaultViewportWidth,
                             "height": iDefaultViewportHeight})
@@ -7066,10 +7128,12 @@ def main():
                         context = browser.new_context(
                             bypass_csp=True,
                             ignore_https_errors=bDefaultIgnoreHttpsErrors,
+                            extra_http_headers=dExtraHttpHeaders or None,
                             user_agent=sUserAgent,
                             viewport={"width": iDefaultViewportWidth,
                                 "height": iDefaultViewportHeight})
                     applyWebdriverOverride(context)
+                    applyExtraHttpHeaders(context, dExtraHttpHeaders)
                 except Exception as ex:
                     sErr = (f"Could not connect Playwright to Edge "
                         f"via CDP at {sCdpEndpoint}: {ex}")
@@ -7114,7 +7178,7 @@ def main():
                         showFinalGuiMessage(capture.getvalue(), f"{sProgramName} - Edge not available")
                     logger.close()
                     return 1
-                context = browser.new_context(bypass_csp=True, ignore_https_errors=bDefaultIgnoreHttpsErrors, user_agent=sUserAgent, viewport={"width": iDefaultViewportWidth, "height": iDefaultViewportHeight})
+                context = browser.new_context(bypass_csp=True, ignore_https_errors=bDefaultIgnoreHttpsErrors, extra_http_headers=dExtraHttpHeaders or None, user_agent=sUserAgent, viewport={"width": iDefaultViewportWidth, "height": iDefaultViewportHeight})
             # Pre-fetch axe-core content once so CSP-restricted sites can still be scanned.
             sAxeContent = ""
             for sAxeUrl in aAxeCdnUrls:
@@ -7156,7 +7220,8 @@ def main():
                         bMainProfile=bMainProfile,
                         playwrightCtx=playwrightCtx,
                         sWsEndpoint=sWsEndpoint,
-                        lConnHolder=lConnHolder)
+                        lConnHolder=lConnHolder,
+                        dExtraHttpHeaders=dExtraHttpHeaders)
                     # If the disconnect/reconnect path replaced our
                     # browser/context inside scanUrl, pick up the
                     # fresh references for the next url. The
