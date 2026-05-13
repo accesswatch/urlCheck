@@ -120,7 +120,7 @@ When invoked without arguments from a GUI shell (Explorer double-click, Start-me
 | `-i` | `--invisible` | Run Microsoft Edge with no visible browser window |
 | `-a` | `--authenticate` | Pause on first url of each registrable domain for the user to authenticate, then press Enter (or click OK) to resume. By default uses a fresh temporary profile and disconnects Playwright during the pause; combine with `-m` to use your real profile (no disconnect). Auto-disables `-i`. |
 | `-m` | `--main-profile` | Launch Edge with your real (default) Edge profile so saved logins are available. Without `-m`, urlCheck uses a fresh temporary profile so the scan is anonymous. Requires that no Edge process is already running. |
-|   | `--crawl` | Discover same-origin links from the supplied URL or URLs, then scan the discovered pages. Crawling is limited to HTTP/HTTPS HTML pages on the same host, skips non-HTML downloads, captures HTTP error pages such as 404s, and runs invisibly unless `--authenticate` is set. |
+|   | `--crawl` | Recursively discover same-origin links from the supplied URL or URLs, then scan the discovered pages until `--crawl-limit` is reached. Crawling is limited to HTTP/HTTPS HTML pages on the same host, skips non-HTML downloads, captures HTTP error pages such as 404s, and forces invisible/headless Edge unless `--authenticate` is set. |
 |   | `--crawl-limit <n>` | Maximum number of pages to discover and scan when `--crawl` is set. Defaults to `25`. |
 |   | `--header "Name: Value"` | Send a custom HTTP header with every page request. Repeat for multiple headers. Header values are redacted from urlCheck logs. |
 |   | `--header-env Name=ENV_VAR` | Send a custom HTTP header whose value is read from an environment variable. Repeat for multiple headers. |
@@ -142,7 +142,7 @@ To scan more than the starting page, add the same-origin crawler:
 urlCheck https://glow.bits-acb.org --crawl --crawl-limit 25 --force -o reports
 ```
 
-Crawler runs are silent by default. Use `--authenticate` when a site needs visible, interactive sign-in or consent handling. HTTP error pages such as `404 Not Found` are reported under `Failed to scan`, while non-HTML downloads discovered during crawling are skipped instead of opening a browser page.
+Crawler runs are recursive and silent by default. Use `--authenticate` when a site needs visible, interactive sign-in or consent handling. HTTP error pages such as `404 Not Found` are reported under `Failed to scan`, while non-HTML downloads discovered during crawling are skipped instead of opening a browser page.
 
 For other sites with their own automation bypass headers, use the generic header options:
 

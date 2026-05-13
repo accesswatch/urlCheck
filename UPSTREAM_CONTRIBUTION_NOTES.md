@@ -4,8 +4,8 @@ This fork has local changes intended to make urlCheck more useful for automated 
 
 ## Good upstream candidates
 
-- Same-origin crawl mode with `--crawl` and `--crawl-limit`.
-- Silent crawl default: `--crawl` runs with invisible/headless Edge unless `--authenticate` is set.
+- Recursive same-origin crawl mode with `--crawl` and `--crawl-limit`.
+- Silent crawl default: `--crawl` runs with invisible/headless Edge unless `--authenticate` is set, and explicitly passes modern Edge `--headless=new` when invisible mode is active.
 - Non-HTML crawl filtering so download links, CSV exports, and media files are skipped during page discovery instead of being opened as browser pages.
 - HTTP error reporting: crawler keeps HTTP error URLs in the scan list, and page scans report statuses such as `HTTP 404` under failed scans.
 - Generic request headers with repeatable `--header "Name: Value"`.

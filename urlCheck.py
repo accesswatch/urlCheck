@@ -7079,6 +7079,9 @@ def main():
                 logger.info("--authenticate overrides --invisible; "
                     "launching Edge with a visible window.")
                 bHeadless = False
+            if bHeadless and "--headless=new" not in lArgs:
+                lArgs.append("--headless=new")
+                logger.info("Invisible mode enabled: forcing Edge --headless=new.")
 
             browser = None
             context = None
