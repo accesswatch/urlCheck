@@ -3689,7 +3689,7 @@ def pauseForAuthenticationWithDisconnect(playwrightCtx, sWsEndpoint,
     return (browserNew, contextNew, pageNew)
 
 
-def scanUrl(sInput, sNormalizedUrl, browser, context, pathBaseDir, sAxeContent="", bForce=False, bAuthenticate=False, bGuiMode=False, bMainProfile=False, playwrightCtx=None, sWsEndpoint=None, lConnHolder=None, dExtraHttpHeaders=None):
+def scanUrl(sInput, sNormalizedUrl, browser, context, pathBaseDir, sAxeContent="", bForce=False, bAuthenticate=False, bGuiMode=False, bMainProfile=False, playwrightCtx=None, sWsEndpoint=None, lConnHolder=None, dExtraHttpHeaders=None, sBrowserChannelUsed=sBrowserChannel):
     """Run a single-url scan.
 
     Returns:
@@ -3842,7 +3842,7 @@ def scanUrl(sInput, sNormalizedUrl, browser, context, pathBaseDir, sAxeContent="
 
         dMetadata = {
             "axeSource": sAxeSource,
-            "browserChannel": sBrowserChannel,
+            "browserChannel": sBrowserChannelUsed,
             "browserVersion": sBrowserVersion,
             "inputValue": sInput,
             "navTimeoutMs": iDefaultNavTimeoutMs,
@@ -6778,6 +6778,7 @@ def main():
     pathOutputDir = None
     sTempUserDataDir = None
     sWsEndpoint = None
+    sBrowserChannelUsed = sBrowserChannel
     playwrightCtx = None
 
     # Playwright suppresses the default SIGINT handler. Restore it so Ctrl+C works.
@@ -7373,25 +7374,55 @@ def main():
                 # Edge or is on an unusual configuration where Playwright
                 # cannot find it, surface a friendly message rather than a
                 # raw Python traceback.
-                try:
-                    browser = browserType.launch(channel=sBrowserChannel, headless=bHeadless, args=lArgs)
-                except Exception as ex:
-                    sErr = (
-                        f"Could not launch Microsoft Edge: {ex}\n\n"
-                        "urlCheck requires Microsoft Edge, which ships with "
-                        "Windows 10 and 11 by default. If Edge has been "
-                        "removed or is unavailable, install or repair it "
-                        "from https://www.microsoft.com/edge and try again."
-                    )
-                    print(sErr)
-                    logger.info(f"Browser launch failed: {ex}")
-                    if bGuiMode:
-                        sys.stdout = streamOriginalOut
-                        sys.stderr = streamOriginalErr
-                        showFinalGuiMessage(capture.getvalue(), f"{sProgramName} - Edge not available")
-                    logger.close()
-                    return 1
-                context = browser.new_context(bypass_csp=True, ignore_https_errors=bDefaultIgnoreHttpsErrors, extra_http_headers=dExtraHttpHeaders or None, user_agent=sUserAgent, viewport={"width": iDefaultViewportWidth, "height": iDefaultViewportHeight})
+                if bHeadless:
+                    try:
+                        browser = browserType.launch(headless=True, args=lArgs)
+                        sBrowserChannelUsed = "chromium-headless"
+                        context = browser.new_context(
+                            bypass_csp=True,
+                            ignore_https_errors=bDefaultIgnoreHttpsErrors,
+                            extra_http_headers=dExtraHttpHeaders or None,
+                            user_agent=sUserAgent,
+                            viewport={"width": iDefaultViewportWidth,
+                                "height": iDefaultViewportHeight})
+                        applyWebdriverOverride(context)
+                    except Exception as ex:
+                        sErr = (
+                            f"Could not launch bundled headless Chromium: {ex}\n\n"
+                            "Invisible automation scans use Playwright's "
+                            "bundled Chromium to avoid system Edge stealing "
+                            "focus. Install the Playwright Chromium browser "
+                            "or run without --invisible for a visible Edge scan."
+                        )
+                        print(sErr)
+                        logger.info(f"Bundled headless Chromium launch failed: {ex}")
+                        if bGuiMode:
+                            sys.stdout = streamOriginalOut
+                            sys.stderr = streamOriginalErr
+                            showFinalGuiMessage(capture.getvalue(),
+                                f"{sProgramName} - Headless browser not available")
+                        logger.close()
+                        return 1
+                else:
+                    try:
+                        browser = browserType.launch(channel=sBrowserChannel, headless=bHeadless, args=lArgs)
+                    except Exception as ex:
+                        sErr = (
+                            f"Could not launch Microsoft Edge: {ex}\n\n"
+                            "urlCheck requires Microsoft Edge, which ships with "
+                            "Windows 10 and 11 by default. If Edge has been "
+                            "removed or is unavailable, install or repair it "
+                            "from https://www.microsoft.com/edge and try again."
+                        )
+                        print(sErr)
+                        logger.info(f"Browser launch failed: {ex}")
+                        if bGuiMode:
+                            sys.stdout = streamOriginalOut
+                            sys.stderr = streamOriginalErr
+                            showFinalGuiMessage(capture.getvalue(), f"{sProgramName} - Edge not available")
+                        logger.close()
+                        return 1
+                    context = browser.new_context(bypass_csp=True, ignore_https_errors=bDefaultIgnoreHttpsErrors, extra_http_headers=dExtraHttpHeaders or None, user_agent=sUserAgent, viewport={"width": iDefaultViewportWidth, "height": iDefaultViewportHeight})
             # Pre-fetch axe-core content once so CSP-restricted sites can still be scanned.
             sAxeContent = ""
             for sAxeUrl in aAxeCdnUrls:
@@ -7434,7 +7465,8 @@ def main():
                         playwrightCtx=playwrightCtx,
                         sWsEndpoint=sWsEndpoint,
                         lConnHolder=lConnHolder,
-                        dExtraHttpHeaders=dExtraHttpHeaders)
+                        dExtraHttpHeaders=dExtraHttpHeaders,
+                        sBrowserChannelUsed=sBrowserChannelUsed)
                     # If the disconnect/reconnect path replaced our
                     # browser/context inside scanUrl, pick up the
                     # fresh references for the next url. The

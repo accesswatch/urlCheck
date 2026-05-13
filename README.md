@@ -11,7 +11,7 @@ description: "Accessibility Checker for Web Pages"
 **License:** [MIT](https://opensource.org/license/mit/)
 **Project home:** <https://github.com/JamalMazrui/urlCheck>
 
-`urlCheck` is a Windows tool that checks web pages for accessibility problems. It opens each page in Microsoft Edge, runs the [axe-core](https://github.com/dequelabs/axe-core) testing engine, and saves a set of output files in a new folder named after the page title.
+`urlCheck` is a Windows tool that checks web pages for accessibility problems. It opens each page in a Playwright-controlled browser, runs the [axe-core](https://github.com/dequelabs/axe-core) testing engine, and saves a set of output files in a new folder named after the page title.
 
 Like its companion tools `2htm` and `extCheck` (see the Announce file for a description of the family), `urlCheck` runs in two modes: a **GUI mode** (a small parameter dialog launched by double-clicking the program, pressing its desktop hotkey, or running with `-g`) and a **command-line mode** (any other invocation, suitable for batch files and pipelines). Both modes accept the same options.
 
@@ -20,7 +20,8 @@ Like its companion tools `2htm` and `extCheck` (see the Announce file for a desc
 ## What you need
 
 - Windows 10 or later (64-bit)
-- Microsoft Edge (already present on Windows 10/11; urlCheck uses your installed Edge directly and does not bundle or download a separate browser)
+- Microsoft Edge for visible or authenticated scans (already present on Windows 10/11)
+- Playwright Chromium for invisible automation scans
 - An internet connection during each scan
 
 You do **not** need to install Python or .NET separately. The installer ships everything `urlCheck` needs, and the .NET Framework 4.8 used by the parameter dialog ships in-box with Windows 10 (since version 1903) and Windows 11.
@@ -56,7 +57,7 @@ The parameter dialog has these controls. Each label has an underlined letter tha
 - **Browse source...** [B] — pick a single source from a file picker
 - **Output folder** [O] — where the output is written. Blank means the current working folder.
 - **Choose output...** [C] — pick the output folder from a folder picker
-- **Invisible mode** [I] — run Edge with no visible browser window
+- **Invisible mode** [I] — run with no visible browser window. In CLI automation runs, urlCheck uses Playwright's bundled headless Chromium instead of system Edge so the scan does not steal focus.
 - **Authenticate credentials** [A] — pause after each newly-encountered domain so you can sign in / dismiss cookie banners / accept popups, then press Enter (or click OK in GUI mode) to resume the scan. By default, urlCheck uses a fresh temporary Edge profile and disconnects its automation channel from Edge during the user-interaction pause (which improves the chance of success against sites that detect active automation, such as WhatsApp Web); to use your real profile instead, also check **Main profile**. If both **Invisible mode** and **Authenticate credentials** are checked, urlCheck overrides Invisible mode at run time and launches Edge with a visible window (an auth prompt requires a visible browser); the override is logged.
 - **Main profile** [M] — launch Edge with your real (default) Edge user profile so saved logins, cookies, and session state are available. Without it, urlCheck uses a fresh temporary profile so the scan is anonymous and your real profile is not exposed to the scanned site. Independent of **Authenticate credentials**. Requires that no Microsoft Edge process is already running, since Edge cannot share a profile across two processes. urlCheck checks at startup; if Edge is running, the CLI exits with a friendly message and the GUI shows a dialog explaining why it cannot proceed and asks you to close Edge before submitting again.
 - **Force replacements** [F] — reuse an existing per-page output folder by emptying its contents and writing a fresh set of files. Without this, urlCheck skips the url when its per-page output folder already exists, preserving previous scan results.
@@ -117,7 +118,7 @@ When invoked without arguments from a GUI shell (Explorer double-click, Start-me
 |   | `--view-output` | After the run, open the output folder in File Explorer |
 | `-l` | `--log` | Write `urlCheck.log` (UTF-8 with BOM) in the output folder. Appends across runs by default; combine with `-f` (`--force`) to replace the prior log instead. |
 | `-u` | `--use-configuration` | Read saved defaults from `%LOCALAPPDATA%\urlCheck\urlCheck.ini` |
-| `-i` | `--invisible` | Run Microsoft Edge with no visible browser window |
+| `-i` | `--invisible` | Run with no visible browser window. Non-authenticated invisible scans use bundled headless Chromium so automation does not steal focus. |
 | `-a` | `--authenticate` | Pause on first url of each registrable domain for the user to authenticate, then press Enter (or click OK) to resume. By default uses a fresh temporary profile and disconnects Playwright during the pause; combine with `-m` to use your real profile (no disconnect). Auto-disables `-i`. |
 | `-m` | `--main-profile` | Launch Edge with your real (default) Edge profile so saved logins are available. Without `-m`, urlCheck uses a fresh temporary profile so the scan is anonymous. Requires that no Edge process is already running. |
 |   | `--crawl` | Recursively discover same-origin links from the supplied URL or URLs, then scan the discovered pages until `--crawl-limit` is reached. Crawling is limited to HTTP/HTTPS HTML pages on the same host, skips non-HTML downloads, captures HTTP error pages such as 404s, and forces invisible/headless Edge unless `--authenticate` is set. |
@@ -313,15 +314,15 @@ The runtime distribution shipped by `urlCheck_setup.exe` is just a few files: `u
 
 ### Source layout
 
-The whole program is one Python file: `urlCheck.py`. It uses [Playwright](https://playwright.dev/python/) to drive Microsoft Edge, [axe-core](https://github.com/dequelabs/axe-core) for the accessibility scan, [openpyxl](https://openpyxl.readthedocs.io/) for the Excel workbook, and [pythonnet](https://pythonnet.github.io/) for the WinForms parameter dialog. The build is packaged with [PyInstaller](https://pyinstaller.org/) into a single self-contained 64-bit exe. The installer is built with [Inno Setup](https://jrsoftware.org/isinfo.php) from `urlCheck.iss`.
+The whole program is one Python file: `urlCheck.py`. It uses [Playwright](https://playwright.dev/python/) to drive Microsoft Edge for visible/authenticated scans and bundled headless Chromium for invisible automation scans, [axe-core](https://github.com/dequelabs/axe-core) for the accessibility scan, [openpyxl](https://openpyxl.readthedocs.io/) for the Excel workbook, and [pythonnet](https://pythonnet.github.io/) for the WinForms parameter dialog. The build is packaged with [PyInstaller](https://pyinstaller.org/) into a single self-contained 64-bit exe. The installer is built with [Inno Setup](https://jrsoftware.org/isinfo.php) from `urlCheck.iss`.
 
 ### Coding style
 
 The source uses what the author calls "Camel Type" (Python variant): Hungarian prefix notation for variables (`b` for boolean, `i` for integer, `s` for string, `l` for list, `d` for dict, etc.), lower camelCase for everything where Python conventionally uses snake_case, and the lowercase class name as the prefix for non-basic-type variables. The `o` prefix is reserved for COM objects only; urlCheck does not use COM, so it has no `o`-prefixed variables. Constants follow the same Hungarian-prefixed naming as variables — only definition placement and convention conveys constant-ness. See `CamelType_Python.md` in this archive for the full guidelines.
 
-### Edge runtime
+### Browser runtime
 
-urlCheck drives the system-installed Microsoft Edge through Playwright's `channel="msedge"` mechanism. **It does not bundle Edge** and does not run `playwright install msedge` (which would conflict with the existing system Edge on every modern Windows machine). Edge ships in-box with Windows 10 and 11; if a user has somehow removed it, urlCheck surfaces a friendly message pointing at <https://www.microsoft.com/edge>.
+urlCheck uses the system-installed Microsoft Edge for visible scans, authenticated scans, and main-profile scans. **It does not bundle Edge** and does not run `playwright install msedge` (which would conflict with the existing system Edge on every modern Windows machine). Non-authenticated invisible scans use Playwright's bundled headless Chromium because system Edge can briefly steal focus even when launched headlessly. Edge ships in-box with Windows 10 and 11; if a user has somehow removed it, visible/authenticated scans surface a friendly message pointing at <https://www.microsoft.com/edge>.
 
 ### Prerequisites
 
