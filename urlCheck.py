@@ -1,5 +1,6 @@
 ﻿# Copyright (c) 2026 Jamal Mazrui — MIT License — https://github.com/JamalMazrui/urlCheck
 import argparse, ctypes, datetime, html, io, json, os, pathlib, platform, re, shutil, signal, struct, subprocess, sys, tempfile, time, traceback, urllib.error, urllib.parse, urllib.request
+from html.parser import HTMLParser
 
 import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -21,6 +22,7 @@ bDefaultIgnoreHttpsErrors = True
 
 iCdnTimeoutSec = 30
 iCsvMaxHtmlLen = 32000
+iDefaultCrawlLimit = 25
 iDefaultNavTimeoutMs = 60000
 iDefaultPostLoadDelayMs = 1500
 iDefaultViewportHeight = 1440
@@ -2537,6 +2539,103 @@ def getNormalizedUrl(sInput):
     return sCandidate
 
 
+class LinkExtractor(HTMLParser):
+    """Extract links from HTML anchor elements."""
+
+    def __init__(self):
+        super().__init__()
+        self.links = []
+
+    def handle_starttag(self, tag, attrs):
+        if str(tag).lower() != "a":
+            return
+        for sName, sValue in attrs:
+            if str(sName).lower() == "href" and sValue:
+                self.links.append(str(sValue))
+
+
+def getCrawlHeaders(dExtraHttpHeaders=None):
+    """Return headers used while discovering pages to scan."""
+    dHeaders = {"User-Agent": sUserAgent}
+    if dExtraHttpHeaders:
+        dHeaders.update(dExtraHttpHeaders)
+    return dHeaders
+
+
+def getSameOriginCrawlUrl(sBaseUrl, sHref, parsedOrigin):
+    """Normalize an href for same-origin crawling, or return empty."""
+    parsedUrl = None
+    sAbsolute = ""
+    sScheme = ""
+
+    sHref = str(sHref or "").strip()
+    if not sHref:
+        return ""
+    sScheme = urllib.parse.urlparse(sHref).scheme.lower()
+    if sScheme and sScheme not in ("http", "https"):
+        return ""
+    sAbsolute = urllib.parse.urljoin(sBaseUrl, sHref)
+    parsedUrl = urllib.parse.urlparse(sAbsolute)
+    if parsedUrl.scheme.lower() not in ("http", "https"):
+        return ""
+    if parsedUrl.netloc.lower() != parsedOrigin.netloc.lower():
+        return ""
+    parsedUrl = parsedUrl._replace(fragment="")
+    return urllib.parse.urlunparse(parsedUrl)
+
+
+def crawlUrls(lSeedUrls, iLimit, dExtraHttpHeaders=None):
+    """Discover same-origin links from one or more seed URLs."""
+    dHeaders = getCrawlHeaders(dExtraHttpHeaders)
+    lDiscovered = []
+    lQueue = []
+    parsedOrigin = None
+    setSeen = set()
+    sCurrent = ""
+    sLink = ""
+
+    iLimit = max(1, int(iLimit or iDefaultCrawlLimit))
+    for sSeed in lSeedUrls:
+        sSeed = getNormalizedUrl(str(sSeed or ""))
+        parsedOrigin = urllib.parse.urlparse(sSeed)
+        if parsedOrigin.scheme.lower() not in ("http", "https"):
+            raise ValueError("--crawl only supports http and https urls.")
+        sSeed = urllib.parse.urlunparse(parsedOrigin._replace(fragment=""))
+        if sSeed not in setSeen:
+            setSeen.add(sSeed)
+            lQueue.append(sSeed)
+
+    while lQueue and len(lDiscovered) < iLimit:
+        sCurrent = lQueue.pop(0)
+        lDiscovered.append(sCurrent)
+        parsedOrigin = urllib.parse.urlparse(sCurrent)
+        try:
+            request = urllib.request.Request(sCurrent, headers=dHeaders)
+            with urllib.request.urlopen(request, timeout=iCdnTimeoutSec) as response:
+                sContentType = str(response.headers.get("Content-Type") or "")
+                if "html" not in sContentType.lower():
+                    continue
+                sHtml = response.read().decode("utf-8", errors="replace")
+        except Exception as ex:
+            logger.info(f"Crawl skipped {sCurrent}: {ex}")
+            continue
+        extractor = LinkExtractor()
+        try:
+            extractor.feed(sHtml)
+        except Exception as ex:
+            logger.info(f"Crawl could not parse links from {sCurrent}: {ex}")
+            continue
+        for sLink in extractor.links:
+            sLink = getSameOriginCrawlUrl(sCurrent, sLink, parsedOrigin)
+            if not sLink or sLink in setSeen:
+                continue
+            setSeen.add(sLink)
+            lQueue.append(sLink)
+            if len(lDiscovered) + len(lQueue) >= iLimit:
+                break
+    return lDiscovered
+
+
 def getPageSnapshot(page, sPageUrl):
     dCss = {}
     dScript = {}
@@ -3056,6 +3155,7 @@ def parseArguments():
             f"Domain only:   {sProgramName} microsoft.com\n"
             f"Several urls:  {sProgramName} https://a.com https://b.com https://c.com\n"
             f"url list file: {sProgramName} urls.txt\n"
+            f"Crawl site:    {sProgramName} https://example.com --crawl --crawl-limit 25\n"
             f"GUI dialog:    {sProgramName} -g\n"
             f"\n"
             f"Output files (in a folder named after each page title):\n"
@@ -3101,6 +3201,10 @@ def parseArguments():
         help="When a url's domain is encountered for the first time in this run, pause after the page loads and prompt the user to authenticate (sign in, accept cookies, dismiss popups, etc.) and press Enter (or click OK in GUI mode) to resume. Within the same run, subsequent urls on the same domain reuse the established session without prompting. Without --main-profile, urlCheck disconnects its automation channel from Edge while the user authenticates and reconnects after, which improves the chance of success against sites that block automated browsers (e.g. WhatsApp Web). With --main-profile, the disconnect pattern is not used (browser security forbids it against your real profile). Forces visible browser mode (overrides --invisible).")
     argParser.add_argument("-m", "--main-profile", dest="bMainProfile", action="store_true",
         help="Launch Edge with your real (default) Edge user profile so saved logins, cookies, and session state are available. Without -m, urlCheck launches Edge with a fresh ephemeral profile so the scan is anonymous and your real profile is not exposed to the scanned site. Requires that no Microsoft Edge process is already running, since Edge cannot share a profile across two processes; urlCheck checks at startup and exits gracefully with a message if Edge is running.")
+    argParser.add_argument("--crawl", dest="bCrawl", action="store_true",
+        help="Discover same-origin links from the supplied url(s), then scan the discovered pages. Crawling is limited to http/https pages on the same host and removes URL fragments.")
+    argParser.add_argument("--crawl-limit", dest="iCrawlLimit", type=int, default=iDefaultCrawlLimit,
+        help=f"Maximum number of pages to discover and scan when --crawl is set. Defaults to {iDefaultCrawlLimit}.")
     argParser.add_argument("--glow-consent-token", dest="sGlowConsentToken", default="",
         help="Send the GLOW automation consent bypass header on page requests. If omitted, urlCheck reads GLOW_AUTOMATION_CONSENT_TOKEN from the process environment, otherwise defaults to GLOW. The token is not saved to urlCheck.ini and is redacted from urlCheck logs.")
     return argParser.parse_args()
@@ -6825,6 +6929,27 @@ def main():
         iUrlTotal = len(lUrls)
         bMultiUrl = iUrlTotal > 1
         if bMultiUrl: logger.info(f"url set: {iUrlTotal} url(s) from the source field")
+
+    if getattr(arguments, "bCrawl", False):
+        try:
+            lUrls = crawlUrls(
+                lUrls,
+                getattr(arguments, "iCrawlLimit", iDefaultCrawlLimit),
+                dExtraHttpHeaders,
+            )
+        except Exception as ex:
+            print(f"[ERROR] Crawl failed: {ex}")
+            logger.info(f"Crawl failed: {ex}")
+            if bGuiMode:
+                sys.stdout = streamOriginalOut
+                sys.stderr = streamOriginalErr
+                showFinalGuiMessage(capture.getvalue(), f"{sProgramName} - Error")
+            logger.close()
+            return 1
+        iUrlTotal = len(lUrls)
+        bMultiUrl = iUrlTotal > 1
+        logger.info(f"crawl discovered {iUrlTotal} url(s)")
+        print(f"Crawl discovered {iUrlTotal} url(s).")
 
     try:
         # Surface a fast user-visible message before starting the

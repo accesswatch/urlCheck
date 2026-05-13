@@ -120,6 +120,8 @@ When invoked without arguments from a GUI shell (Explorer double-click, Start-me
 | `-i` | `--invisible` | Run Microsoft Edge with no visible browser window |
 | `-a` | `--authenticate` | Pause on first url of each registrable domain for the user to authenticate, then press Enter (or click OK) to resume. By default uses a fresh temporary profile and disconnects Playwright during the pause; combine with `-m` to use your real profile (no disconnect). Auto-disables `-i`. |
 | `-m` | `--main-profile` | Launch Edge with your real (default) Edge profile so saved logins are available. Without `-m`, urlCheck uses a fresh temporary profile so the scan is anonymous. Requires that no Edge process is already running. |
+|   | `--crawl` | Discover same-origin links from the supplied URL or URLs, then scan the discovered pages. Crawling is limited to HTTP/HTTPS pages on the same host. |
+|   | `--crawl-limit <n>` | Maximum number of pages to discover and scan when `--crawl` is set. Defaults to `25`. |
 |   | `--glow-consent-token <token>` | Send `X-GLOW-Automation-Consent: <token>` with page requests so GLOW deployments can bypass the first-visit consent dialog during automated scans. Defaults to `GLOW`, or reads `GLOW_AUTOMATION_CONSENT_TOKEN` when that environment variable is set. |
 
 Every option in the GUI corresponds one-to-one with a command-line flag, so a workflow prototyped in the dialog can be translated to a batch file without surprises.
@@ -130,6 +132,12 @@ GLOW deployments allow automation tools to bypass the first-visit consent dialog
 
 ```cmd
 urlCheck https://glow.bits-acb.org --invisible --force -o reports
+```
+
+To scan more than the starting page, add the same-origin crawler:
+
+```cmd
+urlCheck https://glow.bits-acb.org --crawl --crawl-limit 25 --invisible --force -o reports
 ```
 
 Deployments may override the default token with `GLOW_AUTOMATION_CONSENT_TOKEN`. In that case, set the same environment variable before running urlCheck, or pass `--glow-consent-token your-shared-secret`. The environment variable is safer because urlCheck redacts the token from its own logs but cannot control shell history or external process monitors.
@@ -143,6 +151,7 @@ urlCheck accepts:
 - A single url (`https://example.com` or just `example.com`)
 - Several urls separated by spaces
 - The path to a plain text file with one url or local HTML file path per line; the file may have any extension
+- Same-origin crawling from one or more starting urls with `--crawl`
 
 Url-list files are detected automatically by content sniffing, not by extension.
 
