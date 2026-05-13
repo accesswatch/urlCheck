@@ -2607,15 +2607,20 @@ def crawlUrls(lSeedUrls, iLimit, dExtraHttpHeaders=None):
 
     while lQueue and len(lDiscovered) < iLimit:
         sCurrent = lQueue.pop(0)
-        lDiscovered.append(sCurrent)
         parsedOrigin = urllib.parse.urlparse(sCurrent)
         try:
             request = urllib.request.Request(sCurrent, headers=dHeaders)
             with urllib.request.urlopen(request, timeout=iCdnTimeoutSec) as response:
                 sContentType = str(response.headers.get("Content-Type") or "")
                 if "html" not in sContentType.lower():
+                    logger.info(f"Crawl skipped non-HTML url {sCurrent}: {sContentType}")
                     continue
+                lDiscovered.append(sCurrent)
                 sHtml = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as ex:
+            lDiscovered.append(sCurrent)
+            logger.info(f"Crawl captured HTTP error {sCurrent}: HTTP {ex.code}")
+            continue
         except Exception as ex:
             logger.info(f"Crawl skipped {sCurrent}: {ex}")
             continue
@@ -3202,9 +3207,13 @@ def parseArguments():
     argParser.add_argument("-m", "--main-profile", dest="bMainProfile", action="store_true",
         help="Launch Edge with your real (default) Edge user profile so saved logins, cookies, and session state are available. Without -m, urlCheck launches Edge with a fresh ephemeral profile so the scan is anonymous and your real profile is not exposed to the scanned site. Requires that no Microsoft Edge process is already running, since Edge cannot share a profile across two processes; urlCheck checks at startup and exits gracefully with a message if Edge is running.")
     argParser.add_argument("--crawl", dest="bCrawl", action="store_true",
-        help="Discover same-origin links from the supplied url(s), then scan the discovered pages. Crawling is limited to http/https pages on the same host and removes URL fragments.")
+        help="Discover same-origin links from the supplied url(s), then scan the discovered pages. Crawling is limited to http/https pages on the same host, removes URL fragments, and runs invisibly unless --authenticate is set.")
     argParser.add_argument("--crawl-limit", dest="iCrawlLimit", type=int, default=iDefaultCrawlLimit,
         help=f"Maximum number of pages to discover and scan when --crawl is set. Defaults to {iDefaultCrawlLimit}.")
+    argParser.add_argument("--header", dest="lCustomHeaders", action="append", default=[], metavar="NAME:VALUE",
+        help="Send a custom HTTP header with every page request, for example --header \"X-Automation-Consent: yes\". Repeat for multiple headers. Header values are redacted from urlCheck logs.")
+    argParser.add_argument("--header-env", dest="lCustomHeaderEnvs", action="append", default=[], metavar="NAME=ENV_VAR",
+        help="Send a custom HTTP header whose value is read from an environment variable, for example --header-env X-Automation-Consent=AUTOMATION_TOKEN. Repeat for multiple headers.")
     argParser.add_argument("--glow-consent-token", dest="sGlowConsentToken", default="",
         help="Send the GLOW automation consent bypass header on page requests. If omitted, urlCheck reads GLOW_AUTOMATION_CONSENT_TOKEN from the process environment, otherwise defaults to GLOW. The token is not saved to urlCheck.ini and is redacted from urlCheck logs.")
     return argParser.parse_args()
@@ -3224,9 +3233,51 @@ def getGlowConsentToken(arguments):
 
 def getExtraHttpHeaders(arguments):
     """Build extra HTTP headers for browser page requests."""
+    dHeaders = {}
+    setHeaderNames = set()
+    for sHeader in getattr(arguments, "lCustomHeaders", []) or []:
+        sHeader = str(sHeader or "")
+        if ":" not in sHeader:
+            raise ValueError("--header must use NAME:VALUE format.")
+        sName, sValue = sHeader.split(":", 1)
+        sName = sName.strip()
+        sValue = sValue.strip()
+        if not sName or "\r" in sName or "\n" in sName:
+            raise ValueError("--header requires a non-empty header name.")
+        dHeaders[sName] = sValue
+        setHeaderNames.add(sName.lower())
+    for sHeaderEnv in getattr(arguments, "lCustomHeaderEnvs", []) or []:
+        sHeaderEnv = str(sHeaderEnv or "")
+        if "=" not in sHeaderEnv:
+            raise ValueError("--header-env must use NAME=ENV_VAR format.")
+        sName, sEnvName = sHeaderEnv.split("=", 1)
+        sName = sName.strip()
+        sEnvName = sEnvName.strip()
+        if not sName or "\r" in sName or "\n" in sName:
+            raise ValueError("--header-env requires a non-empty header name.")
+        if not sEnvName:
+            raise ValueError("--header-env requires a non-empty environment variable name.")
+        sValue = str(os.environ.get(sEnvName, "") or "")
+        if not sValue:
+            raise ValueError(f"Environment variable {sEnvName} is not set or is empty.")
+        dHeaders[sName] = sValue
+        setHeaderNames.add(sName.lower())
     sToken = getGlowConsentToken(arguments)
-    if not sToken: return {}
-    return {sGlowAutomationConsentHeader: sToken}
+    if sToken and sGlowAutomationConsentHeader.lower() not in setHeaderNames:
+        dHeaders[sGlowAutomationConsentHeader] = sToken
+    return dHeaders
+
+
+def redactHeaderArgument(sArg):
+    """Return a header argument with its value hidden for logs."""
+    sArg = str(sArg or "")
+    if ":" not in sArg:
+        return "[redacted]"
+    sName, _sValue = sArg.split(":", 1)
+    sName = sName.strip()
+    if not sName:
+        return "[redacted]"
+    return f"{sName}: [redacted]"
 
 
 def applyExtraHttpHeaders(context, dExtraHttpHeaders):
@@ -3241,18 +3292,28 @@ def applyExtraHttpHeaders(context, dExtraHttpHeaders):
 def getRedactedCommandLine():
     """Return sys.argv with secret command-line values hidden."""
     lRedacted = []
-    bRedactNext = False
+    sRedactNext = ""
     for sArg in sys.argv:
-        if bRedactNext:
-            lRedacted.append("[redacted]")
-            bRedactNext = False
+        if sRedactNext:
+            if sRedactNext == "header":
+                lRedacted.append(redactHeaderArgument(sArg))
+            else:
+                lRedacted.append("[redacted]")
+            sRedactNext = ""
             continue
         if sArg == "--glow-consent-token":
             lRedacted.append(sArg)
-            bRedactNext = True
+            sRedactNext = "secret"
+            continue
+        if sArg == "--header":
+            lRedacted.append(sArg)
+            sRedactNext = "header"
             continue
         if sArg.startswith("--glow-consent-token="):
             lRedacted.append("--glow-consent-token=[redacted]")
+            continue
+        if sArg.startswith("--header="):
+            lRedacted.append("--header=" + redactHeaderArgument(sArg.split("=", 1)[1]))
             continue
         lRedacted.append(sArg)
     return " ".join(lRedacted)
@@ -3665,7 +3726,15 @@ def scanUrl(sInput, sNormalizedUrl, browser, context, pathBaseDir, sAxeContent="
         # behavior so the rest of the flow is unchanged for non-auth
         # runs.
         sInitialWaitUntil = "domcontentloaded" if bAuthenticate else "load"
-        page.goto(sNormalizedUrl, timeout=iDefaultNavTimeoutMs, wait_until=sInitialWaitUntil)
+        response = page.goto(sNormalizedUrl, timeout=iDefaultNavTimeoutMs, wait_until=sInitialWaitUntil)
+        iHttpStatus = 0
+        try:
+            if response is not None:
+                iHttpStatus = int(response.status or 0)
+        except Exception:
+            iHttpStatus = 0
+        if iHttpStatus >= 400:
+            raise RuntimeError(f"HTTP {iHttpStatus} while loading {sNormalizedUrl}")
 
         # If --authenticate is on and this is the first url on this
         # registrable domain, pause now so the user can sign in /
@@ -6807,9 +6876,24 @@ def main():
             f"viewOutput={arguments.bViewOutput} "
             f"log={arguments.bLog} useConfig={arguments.bUseConfig}")
 
-    dExtraHttpHeaders = getExtraHttpHeaders(arguments)
+    if (getattr(arguments, "bCrawl", False)
+            and not getattr(arguments, "bAuthenticate", False)
+            and not getattr(arguments, "bInvisible", False)):
+        arguments.bInvisible = True
+        logger.info("--crawl defaults to invisible/headless mode; use --authenticate for visible interactive browsing.")
+
+    try:
+        dExtraHttpHeaders = getExtraHttpHeaders(arguments)
+    except Exception as ex:
+        sErr = f"HTTP header configuration error: {ex}"
+        print(sErr)
+        logger.info(sErr)
+        if bGuiMode: showFinalGuiMessage(sErr, f"{sProgramName} - Error")
+        logger.close()
+        return 1
+    logger.info(f"Extra HTTP headers: {len(dExtraHttpHeaders)} configured")
     logger.info("GLOW automation consent header: "
-        f"{'enabled' if dExtraHttpHeaders else 'disabled'}")
+        f"{'enabled' if sGlowAutomationConsentHeader in dExtraHttpHeaders else 'disabled'}")
 
     if not arguments.sSource:
         print("No urls to scan.")
@@ -6856,7 +6940,8 @@ def main():
         ("View output",        str(bool(arguments.bViewOutput)).lower()),
         ("Use configuration",  str(bool(arguments.bUseConfig)).lower()),
         ("Log session",        str(bool(arguments.bLog)).lower()),
-        ("GLOW automation consent header", str(bool(dExtraHttpHeaders)).lower()),
+        ("Extra HTTP headers", str(len(dExtraHttpHeaders))),
+        ("GLOW automation consent header", str(sGlowAutomationConsentHeader in dExtraHttpHeaders).lower()),
         ("GUI mode",           str(bool(bGuiMode)).lower()),
         ("Working folder",     os.getcwd()),
         ("Command line",       getRedactedCommandLine()),

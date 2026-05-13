@@ -120,8 +120,10 @@ When invoked without arguments from a GUI shell (Explorer double-click, Start-me
 | `-i` | `--invisible` | Run Microsoft Edge with no visible browser window |
 | `-a` | `--authenticate` | Pause on first url of each registrable domain for the user to authenticate, then press Enter (or click OK) to resume. By default uses a fresh temporary profile and disconnects Playwright during the pause; combine with `-m` to use your real profile (no disconnect). Auto-disables `-i`. |
 | `-m` | `--main-profile` | Launch Edge with your real (default) Edge profile so saved logins are available. Without `-m`, urlCheck uses a fresh temporary profile so the scan is anonymous. Requires that no Edge process is already running. |
-|   | `--crawl` | Discover same-origin links from the supplied URL or URLs, then scan the discovered pages. Crawling is limited to HTTP/HTTPS pages on the same host. |
+|   | `--crawl` | Discover same-origin links from the supplied URL or URLs, then scan the discovered pages. Crawling is limited to HTTP/HTTPS HTML pages on the same host, skips non-HTML downloads, captures HTTP error pages such as 404s, and runs invisibly unless `--authenticate` is set. |
 |   | `--crawl-limit <n>` | Maximum number of pages to discover and scan when `--crawl` is set. Defaults to `25`. |
+|   | `--header "Name: Value"` | Send a custom HTTP header with every page request. Repeat for multiple headers. Header values are redacted from urlCheck logs. |
+|   | `--header-env Name=ENV_VAR` | Send a custom HTTP header whose value is read from an environment variable. Repeat for multiple headers. |
 |   | `--glow-consent-token <token>` | Send `X-GLOW-Automation-Consent: <token>` with page requests so GLOW deployments can bypass the first-visit consent dialog during automated scans. Defaults to `GLOW`, or reads `GLOW_AUTOMATION_CONSENT_TOKEN` when that environment variable is set. |
 
 Every option in the GUI corresponds one-to-one with a command-line flag, so a workflow prototyped in the dialog can be translated to a batch file without surprises.
@@ -137,7 +139,22 @@ urlCheck https://glow.bits-acb.org --invisible --force -o reports
 To scan more than the starting page, add the same-origin crawler:
 
 ```cmd
-urlCheck https://glow.bits-acb.org --crawl --crawl-limit 25 --invisible --force -o reports
+urlCheck https://glow.bits-acb.org --crawl --crawl-limit 25 --force -o reports
+```
+
+Crawler runs are silent by default. Use `--authenticate` when a site needs visible, interactive sign-in or consent handling. HTTP error pages such as `404 Not Found` are reported under `Failed to scan`, while non-HTML downloads discovered during crawling are skipped instead of opening a browser page.
+
+For other sites with their own automation bypass headers, use the generic header options:
+
+```cmd
+set AUTOMATION_TOKEN=your-shared-secret
+urlCheck https://example.org --crawl --header-env X-Automation-Consent=AUTOMATION_TOKEN --force -o reports
+```
+
+You can also pass a non-secret header directly:
+
+```cmd
+urlCheck https://example.org --header "X-Test-Mode: accessibility" --force -o reports
 ```
 
 Deployments may override the default token with `GLOW_AUTOMATION_CONSENT_TOKEN`. In that case, set the same environment variable before running urlCheck, or pass `--glow-consent-token your-shared-secret`. The environment variable is safer because urlCheck redacts the token from its own logs but cannot control shell history or external process monitors.
